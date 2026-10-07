@@ -104,8 +104,18 @@ public:
     }
     int32_t snapshot_into(T out[], int32_t maxLen)
     {
-        // copies every frame, top to bottom in the array given as a parameter
-        // this is what buildSnapshot() call, returns count written
+        if (top == nullptr || maxLen <= 0){
+            return 0;
+        }
+        Node* curr = top;
+        int32_t written = 0;
+        while (curr != nullptr && written < maxLen)
+        {
+            out[written] = curr->data;
+            written++;
+            curr = curr->next;
+        }
+        return written;
     }
 };
 
@@ -127,16 +137,35 @@ public:
     // Implement these functions
     Timeline()
     {
+        head = nullptr;
+        tail = nullptr;
+        stepCount = 0;
     }
     void record(Snapshot *s)
     {
-        // add record in the timeline
+        if (head == nullptr) {
+            head = tail = new TimelineNode();
+            head->data = s;
+            head->prev = nullptr;
+            tail->next = nullptr;
+        }
+        else {
+            TimelineNode *t = new TimelineNode();
+            t->data = s;
+            t->next = nullptr;
+            t->prev = tail;
+            tail->next = t;
+            tail = t;
+        }
+        stepCount++;
     }
     TimelineNode *begin()
     {
+        return head;
     }
     int32_t getStepCount()
     {
+        return stepCount;
     }
 };
 
@@ -171,8 +200,8 @@ void writeHeader(FILE *f, const TTDBHeader &h)
 {
     fwrite(h.magic, 1, 4, f);
     fwrite(&h.version, sizeof(int32_t), 1, f);
-
-    // placeholder for other two data members
+    fwrite(&h.stepCount, sizeof(int32_t), 1, f);
+    fwrite(&h.indexOffset, sizeof(int64_t), 1, f);
 }
 
 // resolve.bin - bookkeeping
