@@ -16,6 +16,7 @@
 #include <sys/socket.h>*/
 #include <cstdint>
 #include <cstdio>
+#include<vector>
 using namespace std;
 
 // ---- Constants ----
@@ -74,7 +75,7 @@ public:
         if (isEmpty()) {
             throw underflow_error("Stack underflow");
         }
-        if (top->next = nullptr) {
+        if (top->next == nullptr) {
             T result = top->data;
             delete top;
             top = nullptr;
@@ -219,21 +220,102 @@ struct PendingPatch
 
 
 // PASS 0x0: READING source.bin + VALIDITY CHECK
+string trim(const string& str)
+{
+    int32_t start = 0;
+    int32_t end = static_cast<int32_t>(str.length()) - 1;
+    while (start <= end && (str[start] == ' ' || str[start] == '\t' || str[start] == '\r' || str[start] == '\n')){
+        start++;
+    }
+    while (end >= start && (str[end] == ' ' || str[end] == '\t' || str[end] == '\r' || str[end] == '\n')){
+        end--;
+    }
+    if (start > end) {
+        return "";
+    }
+    return str.substr(start, end - start + 1);
+}
 bool readSourceLine(ifstream &in, string &out)
 {
-    // reads the next nonblank line
+    string line;
+    while (getline(in, line))
+    {
+        string trimmed = trim(line);
+        if (!trimmed.empty())
+        {
+            out = trimmed;
+            return true;
+        }
+    }
+
+    out = "";
+    return false;
 }
 string firstWord(const string &line)
 {
-    // returns first word from the input string
+    string f_word = "";
+    int len = line.length();
+    for (int32_t i = 0; i < len && line[i] != ' '; i++) {
+        f_word += line[i];
+    }
+    return f_word;
 }
 string secondWord(const string &line)
 {
-    // returns the second word
+    string s_word = "";
+    int32_t len = static_cast<int32_t>(line.length());
+    int32_t i = 0;
+    while (i < len && line[i] != ' '){
+        i++;
+    }
+    while (i < len && line[i] == ' ') {
+        i++;
+    }
+    if (i >= len){
+        return s_word;
+    }
+    while (i < len && line[i] != ' '){
+        s_word += line[i];
+        i++;
+    }
+    return s_word;
 }
 bool validateProgram(const char *sourcePath)
 {
-    // for each func defined there should be exactly one func_end and no nested funcs allowed - 
+    ifstream file(sourcePath);
+    if (!file.is_open()){
+        throw runtime_error("Error: Could not open source file.");
+    }
+    string line;
+    bool insideFunc = false;
+    bool foundMain = false;
+    int32_t lineNum = 0;
+    while (readSourceLine(file, line)){
+        lineNum++;
+        string kw = firstWord(line);
+        if (kw == "func"){
+            if (insideFunc){
+                throw runtime_error("Validation Error (Line " + to_string(lineNum) + "): Nested 'func' definitions are not allowed.");
+            }
+            insideFunc = true;
+            if (secondWord(line) == "main"){
+                foundMain = true;
+            }
+        }
+        else if (kw == "func_end"){
+            if (!insideFunc){
+                throw runtime_error("Validation Error (Line " + to_string(lineNum) +  "): Unexpected 'func_end' outside of any function.");
+            }
+            insideFunc = false;
+        }
+    }
+    if (insideFunc){
+        throw runtime_error("Validation Error: Unclosed function definition (missing 'func_end').");
+    }
+    if (!foundMain){
+        throw runtime_error("Validation Error: Missing 'main' function declaration.");
+    }
+    return true;
 }
 
 // PASS 0x1: RESOLVE() -> resolve.bin
