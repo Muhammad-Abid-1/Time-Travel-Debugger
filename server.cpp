@@ -286,36 +286,38 @@ bool validateProgram(const char *sourcePath)
     if (!file.is_open()){
         throw runtime_error("Error: Could not open source file.");
     }
-    string line;
-    bool insideFunc = false;
+    Stack<string> funcStack;
     bool foundMain = false;
     int32_t lineNum = 0;
-    while (readSourceLine(file, line)){
+    string line;
+    while (readSourceLine(file, line))
+    {
         lineNum++;
         string kw = firstWord(line);
-        if (kw == "func"){
-            if (insideFunc){
-                throw runtime_error("Validation Error (Line " + to_string(lineNum) + "): Nested 'func' definitions are not allowed.");
+        if (kw == "func") {
+            if (!funcStack.isEmpty()){
+                throw runtime_error("Validation Error (Line " + to_string(lineNum) + "): Nested 'func' definitions are not allowed. Active parent: '" + funcStack.peek() + "'.");
             }
-            insideFunc = true;
-            if (secondWord(line) == "main"){
+            string fName = secondWord(line);
+            if (fName == "main") {
                 foundMain = true;
             }
+            funcStack.push(fName);
         }
         else if (kw == "func_end"){
-            if (!insideFunc){
-                throw runtime_error("Validation Error (Line " + to_string(lineNum) +  "): Unexpected 'func_end' outside of any function.");
+            if (funcStack.isEmpty()) {
+                throw runtime_error("Validation Error (Line " + to_string(lineNum) + "): Unexpected 'func_end' outside of any function.");
             }
-            insideFunc = false;
+            funcStack.pop();
         }
     }
-    if (insideFunc){
-        throw runtime_error("Validation Error: Unclosed function definition (missing 'func_end').");
+    if (!funcStack.isEmpty()){
+        throw runtime_error("Validation Error: Unclosed function definition for '" + funcStack.peek() + "' (missing 'func_end').");
     }
     if (!foundMain){
         throw runtime_error("Validation Error: Missing 'main' function declaration.");
     }
-    return true;
+    return true; 
 }
 
 // PASS 0x1: RESOLVE() -> resolve.bin
