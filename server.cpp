@@ -323,12 +323,37 @@ bool validateProgram(const char *sourcePath)
 // PASS 0x1: RESOLVE() -> resolve.bin
 int64_t writeResolveRecord(FILE *f, int64_t offsetField, const string &text)
 {
-    // writes one [offset(8B)][size(4B)][string] record at the current file position
-    // returns this record's own starting byte position
+    int64_t recordStartOffset = ftell(f);
+    int32_t len = static_cast<int32_t>(text.length());
+    int64_t totalRecordSize = 8 + 4 + static_cast<int64_t>(len);
+    int64_t nextRecordOffset = recordStartOffset + totalRecordSize;
+    fwrite(&offsetField, sizeof(int64_t), 1, f);
+    fwrite(&len, sizeof(int32_t), 1, f);
+    if (len > 0)
+    {
+        fwrite(text.data(), sizeof(char), len, f);
+    }
+    return recordStartOffset;
 }
 int64_t readResolveRecord(FILE *f, string &outText)
 {
-    // reads one record at the current position and advances past it, returns the offset field - the raw line text comes back untouched in outText.
+    int64_t offsetField = -1;
+    int32_t len = 0;
+    if (!fread(&offsetField, sizeof(int64_t), 1, f) || !fread(&len, sizeof(int32_t), 1, f)){
+        outText = "";
+        return -1;
+    }
+    if (len > 0){
+        outText.resize(len);
+        if (fread(&outText[0], sizeof(char), len, f) != static_cast<size_t>(len)){
+            outText = "";
+            return -1;
+        }
+    }
+    else{
+        outText = "";
+    }
+    return offsetField;
 }
 int64_t resolveProgram(const char *sourcePath, const char *resolveBinPath)
 {
@@ -336,14 +361,73 @@ int64_t resolveProgram(const char *sourcePath, const char *resolveBinPath)
     int32_t funcCount = 0;
     PendingPatch patches[MAX_PATCHES];
     int32_t patchCount = 0;
-    // Every source line becomes one record holding the raw line, as-is.
-    // resolve() only PEEKS at the leading word(s) -- enough to spot FUNC
-    // (remember its position) and CALL (remember which function it needs
-    // and where its offset field sits).
-    // Once the whole file is written, every CALL's offset field is patched
-    // with its target's position. Patching happens after the full write
-    // Returns the byte offset of main's FUNC header record.
-    // if there is no main return the error 
+    FILE* srcFile = fopen(sourcePath, "rb");
+    if (!srcFile){
+        throw runtime_error("Failed to open input binary file during Pass 0x1.");
+    }
+    FILE* resFile = fopen(resolveBinPath, "wb+");
+    if (!resFile){
+        fclose(srcFile);
+        throw runtime_error("Failed to create resolve.bin during Pass 0x1.");
+    }
+    int64_t mainOffset = -1;
+    string line;
+    while (readResolveRecord(srcFile, line) != -1){
+        string kw = firstWord(line);
+        if (kw == "func"){
+            string fName = secondWord(line);
+            int64_t recOffset = writeResolveRecord(resFile, -1, line);
+            if (funcCount >= MAX_FUNCS){
+                fclose(srcFile);
+                fclose(resFile);
+                throw runtime_error("Exceeded maximum function capacity.");
+            }
+            funcArray[funcCount].funcName = fName;
+            funcArray[funcCount].byteOffsetInResolveBin = recOffset;
+            funcCount++;
+            if (fName == "main"){
+                mainOffset = recOffset;
+            }
+        }
+        else if (kw == "call"){
+            string targetName = secondWord(line);
+            int64_t recOffset = writeResolveRecord(resFile, -1, line);
+            if (patchCount >= MAX_PATCHES){
+                fclose(srcFile);
+                fclose(resFile);
+                throw runtime_error("Exceeded maximum pending patch capacity.");
+            }
+            patches[patchCount].byteOffsetOfOffsetField = recOffset;
+            patches[patchCount].targetFuncName = targetName;
+            patchCount++;
+        }
+        else{
+            writeResolveRecord(resFile, -1, line);
+        }
+    }
+    fclose(srcFile);
+    if (mainOffset == -1){
+        fclose(resFile);
+        throw runtime_error("Error: Entry point 'func main' missing.");
+    }
+    for (int32_t i = 0; i < patchCount; i++){
+        int64_t targetAddress = -1;
+        for (int32_t j = 0; j < funcCount; j++){
+            if (funcArray[j].funcName == patches[i].targetFuncName){
+                targetAddress = funcArray[j].byteOffsetInResolveBin;
+                break;
+            }
+        }
+        if (targetAddress == -1){
+            fclose(resFile);
+            throw runtime_error("Undefined function reference: " + patches[i].targetFuncName);
+        }
+        fseek(resFile, patches[i].byteOffsetOfOffsetField, SEEK_SET);
+        fwrite(&targetAddress, sizeof(int64_t), 1, resFile);
+    }
+    fflush(resFile);
+    fclose(resFile);
+    return mainOffset;
 }
 
 // PASS 0x2: EXECUTION (tokenization happens here)
