@@ -22,3 +22,13 @@ i will start later with stage 2
 implemented stage 2
 stage 2
 i will start later with stage 3
+
+10/10/2026   8:37 pm
+reimplemented till phase 02
+Changes were necessary to correctly parse the binary file format 
+storing records as during Pass 0x1. Integrating sstream and binary
+stream reading allowed precise tokenization of instruction keywords 
+and identifiers. This ensures accurate symbol destination tracking 
+with FuncEntry and proper byte-offset patching for CALL instructions.
+stage 2
+i will start later with stage 3

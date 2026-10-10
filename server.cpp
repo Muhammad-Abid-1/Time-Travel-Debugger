@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstdio>
 #include<vector>
+#include <sstream>
 using namespace std;
 
 // ---- Constants ----
@@ -38,82 +39,65 @@ class Stack
     struct Node
     {
         T data;
-        Node *next;
+        Node* next;
+        Node(const T& val, Node* n = nullptr) : data(val), next(n) {}
     };
-    Node *top;
+    Node* top;
     int32_t count;
 
 public:
-    // Implement these functions:
-    Stack()
-    { 
-        top = nullptr;
-        count = 0;
-    }
-    void push(const T &val)
+    Stack() : top(nullptr), count(0) {}
+    ~Stack()
     {
-        if (count + 1 > MAX_STACK_DEPTH)
-        {
-            throw overflow_error("Stack overflow");
+        while (!isEmpty()){
+            pop();
         }
-        if (top == nullptr) {
-            top = new Node();
-            top->data = val;
-            top->next = nullptr;
-            count++;
+    }
+    void push(const T& val)
+    {
+        if (count >= MAX_STACK_DEPTH){
+           throw runtime_error( "Error: Stack overflow limit reached (" + MAX_STACK_DEPTH + ").");
+            return;
         }
-        else {
-            Node* n = new Node();
-            n->data = val;
-            n->next = top;
-            top = n;
-            count++;
-        }
+        top = new Node(val, top);
+        count++;
     }
     T pop()
     {
-        if (isEmpty()) {
-            throw underflow_error("Stack underflow");
+        if (isEmpty()){
+            throw runtime_error("Error: Stack underflow");
+            return T();
         }
-        if (top->next == nullptr) {
-            T result = top->data;
-            delete top;
-            top = nullptr;
-            count--;
-            return result;
-        }
-        T result = top->data;
         Node* temp = top;
+        T val = temp->data;
         top = top->next;
         delete temp;
         count--;
-        return result;
+        return val;
     }
-    T &peek()
+    T& peek()
     {
+        if (isEmpty()){
+            throw runtime_error("Error: Stack underflow");
+        }
         return top->data;
     }
     bool isEmpty()
     {
-        if (top == nullptr)
-            return true;
-        return false;
+        return top == nullptr;
     }
+
     int32_t depth()
     {
         return count;
     }
+
     int32_t snapshot_into(T out[], int32_t maxLen)
     {
-        if (top == nullptr || maxLen <= 0){
-            return 0;
-        }
         Node* curr = top;
         int32_t written = 0;
-        while (curr != nullptr && written < maxLen)
-        {
-            out[written] = curr->data;
-            written++;
+        while (curr != nullptr && written < maxLen){
+            out[written++] = curr->data;
             curr = curr->next;
         }
         return written;
@@ -125,42 +109,42 @@ public:
 struct Snapshot; // fwd declaration;
 struct TimelineNode
 {
-    Snapshot *data;
-    TimelineNode *next;
-    TimelineNode *prev;
+    Snapshot* data;
+    TimelineNode* next;
+    TimelineNode* prev;
+    TimelineNode(Snapshot* s) : data(s), next(nullptr), prev(nullptr) {}
 };
+
 class Timeline
 {
-    TimelineNode *head, *tail;
+    TimelineNode* head, * tail;
     int32_t stepCount;
 
 public:
-    // Implement these functions
-    Timeline()
-    {
-        head = nullptr;
-        tail = nullptr;
-        stepCount = 0;
-    }
-    void record(Snapshot *s)
-    {
-        if (head == nullptr) {
-            head = tail = new TimelineNode();
-            head->data = s;
-            head->prev = nullptr;
-            tail->next = nullptr;
+    Timeline() : head(nullptr), tail(nullptr), stepCount(0) {}
+    ~Timeline(){
+        TimelineNode* curr = head;
+        while (curr){
+            TimelineNode* next = curr->next;
+            delete curr->data;
+            delete curr;
+            curr = next;
         }
-        else {
-            TimelineNode *t = new TimelineNode();
-            t->data = s;
-            t->next = nullptr;
-            t->prev = tail;
-            tail->next = t;
-            tail = t;
+    }
+    void record(Snapshot* s)
+    {
+        TimelineNode* node = new TimelineNode(s);
+        if (!head){
+            head = tail = node;
+        }
+        else{
+            tail->next = node;
+            node->prev = tail;
+            tail = node;
         }
         stepCount++;
     }
-    TimelineNode *begin()
+    TimelineNode* begin()
     {
         return head;
     }
@@ -197,8 +181,9 @@ struct TTDBHeader
     int32_t stepCount;
     int64_t indexOffset;
 };
-void writeHeader(FILE *f, const TTDBHeader &h)
+void writeHeader(FILE* f, const TTDBHeader& h)
 {
+    fseek(f, 0, SEEK_SET);
     fwrite(h.magic, 1, 4, f);
     fwrite(&h.version, sizeof(int32_t), 1, f);
     fwrite(&h.stepCount, sizeof(int32_t), 1, f);
@@ -220,213 +205,152 @@ struct PendingPatch
 
 
 // PASS 0x0: READING source.bin + VALIDITY CHECK
-string trim(const string& str)
+bool readSourceLine(ifstream& in, string& out)
 {
-    int32_t start = 0;
-    int32_t end = static_cast<int32_t>(str.length()) - 1;
-    while (start <= end && (str[start] == ' ' || str[start] == '\t' || str[start] == '\r' || str[start] == '\n')){
-        start++;
-    }
-    while (end >= start && (str[end] == ' ' || str[end] == '\t' || str[end] == '\r' || str[end] == '\n')){
-        end--;
-    }
-    if (start > end) {
-        return "";
-    }
-    return str.substr(start, end - start + 1);
+    int64_t rawOffset = 0;
+    if (!in.read(reinterpret_cast<char*>(&rawOffset), sizeof(int64_t))) 
+        return false;
+    uint32_t strSize = 0;
+    if (!in.read(reinterpret_cast<char*>(&strSize), sizeof(uint32_t))) 
+        return false;
+    vector<char> buf(strSize + 1, 0);
+    if (!in.read(buf.data(), strSize)) 
+        return false;
+    out = string(buf.data(), strSize);
+    return true;
 }
-bool readSourceLine(ifstream &in, string &out)
+string cleanToken(const string& s)
 {
-    string line;
-    while (getline(in, line))
+    string res = "";
+    for (char c : s)
     {
-        string trimmed = trim(line);
-        if (!trimmed.empty())
+        if (isalnum(static_cast<unsigned char>(c)) || c == '_')
         {
-            out = trimmed;
-            return true;
+            res += c;
         }
     }
-
-    out = "";
-    return false;
+    return res;
 }
-string firstWord(const string &line)
+string firstWord(const string& line)
 {
-    string f_word = "";
-    int len = line.length();
-    for (int32_t i = 0; i < len && line[i] != ' '; i++) {
-        f_word += line[i];
-    }
-    return f_word;
+    stringstream ss(line);
+    string w;
+    if (ss >> w) 
+        return cleanToken(w);
+    return "";
 }
-string secondWord(const string &line)
+string secondWord(const string& line)
 {
-    string s_word = "";
-    int32_t len = static_cast<int32_t>(line.length());
-    int32_t i = 0;
-    while (i < len && line[i] != ' '){
-        i++;
-    }
-    while (i < len && line[i] == ' ') {
-        i++;
-    }
-    if (i >= len){
-        return s_word;
-    }
-    while (i < len && line[i] != ' '){
-        s_word += line[i];
-        i++;
-    }
-    return s_word;
+    stringstream ss(line);
+    string w1, w2;
+    if (ss >> w1 >> w2) 
+        return cleanToken(w2);
+    return "";
 }
-bool validateProgram(const char *sourcePath)
+bool validateProgram(const char* sourcePath)
 {
-    ifstream file(sourcePath);
-    if (!file.is_open()){
-        throw runtime_error("Error: Could not open source file.");
-    }
-    Stack<string> funcStack;
-    bool foundMain = false;
-    int32_t lineNum = 0;
+    ifstream in(sourcePath, ios::binary);
+    if (!in.is_open()) 
+        return false;
     string line;
-    while (readSourceLine(file, line))
-    {
-        lineNum++;
+    Stack<string> funcStack;
+    while (readSourceLine(in, line)){
         string kw = firstWord(line);
-        if (kw == "func") {
+        if (kw == "func"){
             if (!funcStack.isEmpty()){
-                throw runtime_error("Validation Error (Line " + to_string(lineNum) + "): Nested 'func' definitions are not allowed. Active parent: '" + funcStack.peek() + "'.");
+                return false;
             }
-            string fName = secondWord(line);
-            if (fName == "main") {
-                foundMain = true;
-            }
-            funcStack.push(fName);
+            funcStack.push(line);
         }
         else if (kw == "func_end"){
-            if (funcStack.isEmpty()) {
-                throw runtime_error("Validation Error (Line " + to_string(lineNum) + "): Unexpected 'func_end' outside of any function.");
+            if (funcStack.isEmpty()){
+                return false;
             }
             funcStack.pop();
         }
     }
-    if (!funcStack.isEmpty()){
-        throw runtime_error("Validation Error: Unclosed function definition for '" + funcStack.peek() + "' (missing 'func_end').");
-    }
-    if (!foundMain){
-        throw runtime_error("Validation Error: Missing 'main' function declaration.");
-    }
-    return true; 
+    return funcStack.isEmpty();
 }
 
 // PASS 0x1: RESOLVE() -> resolve.bin
-int64_t writeResolveRecord(FILE *f, int64_t offsetField, const string &text)
+int64_t writeResolveRecord(FILE* f, int64_t offsetField, const string& text)
 {
-    int64_t recordStartOffset = ftell(f);
-    int32_t len = static_cast<int32_t>(text.length());
-    int64_t totalRecordSize = 8 + 4 + static_cast<int64_t>(len);
-    int64_t nextRecordOffset = recordStartOffset + totalRecordSize;
+    int64_t startPos = _ftelli64(f);
+    uint32_t strSize = static_cast<uint32_t>(text.length());
     fwrite(&offsetField, sizeof(int64_t), 1, f);
-    fwrite(&len, sizeof(int32_t), 1, f);
-    if (len > 0)
-    {
-        fwrite(text.data(), sizeof(char), len, f);
-    }
-    return recordStartOffset;
+    fwrite(&strSize, sizeof(uint32_t), 1, f);
+    fwrite(text.c_str(), 1, strSize, f);
+    return startPos;
 }
-int64_t readResolveRecord(FILE *f, string &outText)
+int64_t readResolveRecord(FILE* f, string& outText)
 {
-    int64_t offsetField = -1;
-    int32_t len = 0;
-    if (!fread(&offsetField, sizeof(int64_t), 1, f) || !fread(&len, sizeof(int32_t), 1, f)){
-        outText = "";
+    int64_t offsetField = 0;
+    if (fread(&offsetField, sizeof(int64_t), 1, f) != 1) 
         return -1;
-    }
-    if (len > 0){
-        outText.resize(len);
-        if (fread(&outText[0], sizeof(char), len, f) != static_cast<size_t>(len)){
-            outText = "";
-            return -1;
-        }
-    }
-    else{
-        outText = "";
-    }
+    uint32_t strSize = 0;
+    if (fread(&strSize, sizeof(uint32_t), 1, f) != 1) 
+        return -1;
+    vector<char> buf(strSize + 1, 0);
+    if (fread(buf.data(), 1, strSize, f) != strSize) 
+        return -1;
+    outText = string(buf.data(), strSize);
     return offsetField;
 }
-int64_t resolveProgram(const char *sourcePath, const char *resolveBinPath)
+int64_t resolveProgram(const char* sourcePath, const char* resolveBinPath)
 {
+    ifstream in(sourcePath, ios::binary);
+    if (!in.is_open()) 
+        return -1;
+    FILE* fRes = fopen(resolveBinPath, "wb+");
+    if (!fRes) 
+        return -1;
     FuncEntry funcArray[MAX_FUNCS];
     int32_t funcCount = 0;
     PendingPatch patches[MAX_PATCHES];
     int32_t patchCount = 0;
-    FILE* srcFile = fopen(sourcePath, "rb");
-    if (!srcFile){
-        throw runtime_error("Failed to open input binary file during Pass 0x1.");
-    }
-    FILE* resFile = fopen(resolveBinPath, "wb+");
-    if (!resFile){
-        fclose(srcFile);
-        throw runtime_error("Failed to create resolve.bin during Pass 0x1.");
-    }
-    int64_t mainOffset = -1;
     string line;
-    while (readResolveRecord(srcFile, line) != -1){
+    int64_t mainOffset = -1;
+    while (readSourceLine(in, line)){
         string kw = firstWord(line);
+        int64_t recordStartPos = _ftelli64(fRes);
         if (kw == "func"){
             string fName = secondWord(line);
-            int64_t recOffset = writeResolveRecord(resFile, -1, line);
-            if (funcCount >= MAX_FUNCS){
-                fclose(srcFile);
-                fclose(resFile);
-                throw runtime_error("Exceeded maximum function capacity.");
-            }
-            funcArray[funcCount].funcName = fName;
-            funcArray[funcCount].byteOffsetInResolveBin = recOffset;
-            funcCount++;
+            funcArray[funcCount++] = { fName, recordStartPos };
             if (fName == "main"){
-                mainOffset = recOffset;
+                mainOffset = recordStartPos;
             }
+            writeResolveRecord(fRes, recordStartPos, line);
         }
         else if (kw == "call"){
-            string targetName = secondWord(line);
-            int64_t recOffset = writeResolveRecord(resFile, -1, line);
-            if (patchCount >= MAX_PATCHES){
-                fclose(srcFile);
-                fclose(resFile);
-                throw runtime_error("Exceeded maximum pending patch capacity.");
-            }
-            patches[patchCount].byteOffsetOfOffsetField = recOffset;
-            patches[patchCount].targetFuncName = targetName;
-            patchCount++;
+            string targetFunc = secondWord(line);
+            patches[patchCount++] = { recordStartPos, targetFunc };
+            writeResolveRecord(fRes, 0, line);
         }
         else{
-            writeResolveRecord(resFile, -1, line);
+            writeResolveRecord(fRes, recordStartPos, line);
         }
     }
-    fclose(srcFile);
     if (mainOffset == -1){
-        fclose(resFile);
-        throw runtime_error("Error: Entry point 'func main' missing.");
+        fclose(fRes);
+        return -1;
     }
-    for (int32_t i = 0; i < patchCount; i++){
-        int64_t targetAddress = -1;
-        for (int32_t j = 0; j < funcCount; j++){
+
+    for (int i = 0; i < patchCount; i++){
+        int64_t targetOffset = -1;
+        for (int j = 0; j < funcCount; j++){
             if (funcArray[j].funcName == patches[i].targetFuncName){
-                targetAddress = funcArray[j].byteOffsetInResolveBin;
+                targetOffset = funcArray[j].byteOffsetInResolveBin;
                 break;
             }
         }
-        if (targetAddress == -1){
-            fclose(resFile);
-            throw runtime_error("Undefined function reference: " + patches[i].targetFuncName);
+        if (targetOffset == -1){
+            fclose(fRes);
+            return -1;
         }
-        fseek(resFile, patches[i].byteOffsetOfOffsetField, SEEK_SET);
-        fwrite(&targetAddress, sizeof(int64_t), 1, resFile);
+        _fseeki64(fRes, patches[i].byteOffsetOfOffsetField, SEEK_SET);
+        fwrite(&targetOffset, sizeof(int64_t), 1, fRes);
     }
-    fflush(resFile);
-    fclose(resFile);
+    fclose(fRes);
     return mainOffset;
 }
 
@@ -442,18 +366,18 @@ struct Token
     TokenType type;
     string text;
 };
-int32_t tokenizeLine(const string &line, Token tokens[], int32_t maxTokens)
+int32_t tokenizeLine(const string& line, Token tokens[], int32_t maxTokens)
 {
     // first word is always a instruction keyword
     // instruction set = [func, func_end, call, set, add, sub, mul and div]
     // next word is identifier like name of a function, variable name
     // after identifier all are the params/arg, space separated
 }
-Snapshot *buildSnapshot(Stack<Frame> &callStack)
+Snapshot* buildSnapshot(Stack<Frame>& callStack)
 {
     // build the snapshot based on the callStack given
 }
-void executeProgram(const char *resolveBinPath, int64_t mainOffset, Timeline &timeline)
+void executeProgram(const char* resolveBinPath, int64_t mainOffset, Timeline& timeline)
 {
     // initialize the call stack
     // make the main frame
@@ -464,7 +388,7 @@ void executeProgram(const char *resolveBinPath, int64_t mainOffset, Timeline &ti
 }
 
 // PASS 0x3: SERIALIZE TIMELINE
-void writeTdbg(Timeline &timeline, const char *tdbgPath)
+void writeTdbg(Timeline& timeline, const char* tdbgPath)
 {
     // placeholder for header
     // index array of the size of stepcount from the timeline
