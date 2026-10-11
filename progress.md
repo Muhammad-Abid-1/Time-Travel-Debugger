@@ -32,3 +32,8 @@ and identifiers. This ensures accurate symbol destination tracking
 with FuncEntry and proper byte-offset patching for CALL instructions.
 stage 2
 i will start later with stage 3
+
+11/10/2026  9:53 pm
+implemented stage 3
+stage 3
+i will start later with stage 4

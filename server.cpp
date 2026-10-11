@@ -162,12 +162,13 @@ struct Variable
 };
 struct Frame
 {
-    string func_name;
-    int32_t argc;
-    Variable argv[MAX_VARS_PER_FRAME];
-    int32_t returnLine;
-    Variable locals[MAX_VARS_PER_FRAME];
-    int32_t localCount;
+    string func_name{};
+    int32_t argc{ 0 };
+    Variable argv[MAX_VARS_PER_FRAME]{};
+    int32_t returnLine{ 0 };
+    int64_t returnOffset{ -1 }; 
+    Variable locals[MAX_VARS_PER_FRAME]{};
+    int32_t localCount{ 0 };
 };
 struct Snapshot
 {
@@ -334,7 +335,6 @@ int64_t resolveProgram(const char* sourcePath, const char* resolveBinPath)
         fclose(fRes);
         return -1;
     }
-
     for (int i = 0; i < patchCount; i++){
         int64_t targetOffset = -1;
         for (int j = 0; j < funcCount; j++){
@@ -368,23 +368,144 @@ struct Token
 };
 int32_t tokenizeLine(const string& line, Token tokens[], int32_t maxTokens)
 {
-    // first word is always a instruction keyword
-    // instruction set = [func, func_end, call, set, add, sub, mul and div]
-    // next word is identifier like name of a function, variable name
-    // after identifier all are the params/arg, space separated
+    stringstream ss(line);
+    string word;
+    int32_t count = 0;
+    if (ss >> word && count < maxTokens){
+        tokens[count++] = { KEYWORD, cleanToken(word) };
+    }
+    if (ss >> word && count < maxTokens){
+        tokens[count++] = { IDENTIFIER, cleanToken(word) };
+    }
+    while (ss >> word && count < maxTokens){
+        tokens[count++] = { PARAM, cleanToken(word) };
+    }
+    return count;
 }
 Snapshot* buildSnapshot(Stack<Frame>& callStack)
 {
-    // build the snapshot based on the callStack given
+    Snapshot* s = new Snapshot();
+    s->stackDepth = callStack.snapshot_into(s->callStack, MAX_STACK_DEPTH);
+    return s;
+}
+int32_t* getVarPointer(Frame& frame, const string& varName)
+{
+    for (int i = 0; i < frame.argc; i++){
+        if (frame.argv[i].name == varName) 
+            return &frame.argv[i].value;
+    }
+    for (int i = 0; i < frame.localCount; i++){
+        if (frame.locals[i].name == varName) 
+            return &frame.locals[i].value;
+    }
+    if (frame.localCount < MAX_VARS_PER_FRAME){
+        frame.locals[frame.localCount].name = varName;
+        frame.locals[frame.localCount].value = 0;
+        return &frame.locals[frame.localCount++].value;
+    }
+    return nullptr;
+}
+int32_t getVarValue(Frame& frame, const string& valStr)
+{
+    if (valStr.empty()) 
+        return 0;
+    if ((valStr[0] >= '0' && valStr[0] <= '9') || valStr[0] == '-'){
+        return stoi(valStr);
+    }
+    int32_t* ptr = getVarPointer(frame, valStr);
+    return ptr ? *ptr : 0;
 }
 void executeProgram(const char* resolveBinPath, int64_t mainOffset, Timeline& timeline)
 {
-    // initialize the call stack
-    // make the main frame
-    // push main frame on the call stack
+    FILE* f = fopen(resolveBinPath, "rb");
+    if (!f) 
+        return;
+    Stack<Frame> callStack;
+    Frame mainFrame;
+    mainFrame.func_name = "main";
+    mainFrame.returnOffset = -1;
+    callStack.push(mainFrame);
+    _fseeki64(f, mainOffset, SEEK_SET);
+    Token tokens[MAX_TOKENS];
+    string lineText;
+    while (!callStack.isEmpty()){
+        int64_t currRecordPos = _ftelli64(f);
+        int64_t targetOffset = readResolveRecord(f, lineText);
+        if (targetOffset == -1) 
+            break;
+        int32_t tokenCount = tokenizeLine(lineText, tokens, MAX_TOKENS);
+        if (tokenCount == 0) 
+            continue;
+        string kw = tokens[0].text;
+        Frame& currFrame = callStack.peek();
+        if (kw == "func")
+        {
+            
+        }
+        else if (kw == "set"){
+            string varName = tokens[1].text;
+            int32_t val = getVarValue(currFrame, tokens[2].text);
+            int32_t* varPtr = getVarPointer(currFrame, varName);
+            if (varPtr) *varPtr = val;
+        }
+        else if (kw == "add" || kw == "sub" || kw == "mul" || kw == "div"){
+            string targetVar = tokens[1].text;
+            int32_t operandVal = getVarValue(currFrame, tokens[2].text);
+            int32_t* targetPtr = getVarPointer(currFrame, targetVar);
+            if (targetPtr){
+                if (kw == "add") 
+                    *targetPtr += operandVal;
+                else if (kw == "sub") 
+                    *targetPtr -= operandVal;
+                else if (kw == "mul") 
+                    *targetPtr *= operandVal;
+                else if (kw == "div" && operandVal != 0) 
+                    *targetPtr /= operandVal;
+            }
+        }
+        else if (kw == "call")
+        {
+            uint32_t strSize = static_cast<uint32_t>(lineText.length());
+            int64_t nextInstructionOffset = currRecordPos + 8 + 4 + strSize;
 
-    // implementation:
-    // execute line by line, and according to the keyword perform action
+            Frame calleeFrame;
+            calleeFrame.func_name = tokens[1].text;
+            calleeFrame.returnOffset = nextInstructionOffset;
+            calleeFrame.argc = tokenCount - 2;
+
+            for (int i = 2; i < tokenCount; i++)
+            {
+                calleeFrame.argv[i - 2].name = tokens[i].text;
+                calleeFrame.argv[i - 2].value = getVarValue(currFrame, tokens[i].text);
+            }
+
+            callStack.push(calleeFrame);
+            _fseeki64(f, targetOffset, SEEK_SET);
+        }
+        else if (kw == "func_end")
+        {
+            Frame completedFrame = callStack.pop();
+
+            if (!callStack.isEmpty())
+            {
+                Frame& callerFrame = callStack.peek();
+                for (int i = 0; i < completedFrame.argc; i++)
+                {
+                    int32_t* callerVar = getVarPointer(callerFrame, completedFrame.argv[i].name);
+                    if (callerVar)
+                    {
+                        *callerVar = completedFrame.argv[i].value;
+                    }
+                }
+                _fseeki64(f, completedFrame.returnOffset, SEEK_SET);
+            }
+        }
+        if (!callStack.isEmpty()){
+            Snapshot* s = buildSnapshot(callStack);
+            timeline.record(s);
+        }
+    }
+    fclose(f);
 }
 
 // PASS 0x3: SERIALIZE TIMELINE
