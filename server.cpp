@@ -8,6 +8,7 @@
 //   4. Pass 0X3   -- serialize Timeline -> session.tdbg(header + snapshot records + dense index)
 
 
+#define _CRT_SECURE_NO_WARNINGS
 #include <iostream>
 #include <string>
 #include <cstdint>
@@ -56,7 +57,7 @@ public:
     void push(const T& val)
     {
         if (count >= MAX_STACK_DEPTH){
-           throw runtime_error( "Error: Stack overflow limit reached (" + MAX_STACK_DEPTH + ").");
+            throw runtime_error("Error: Stack overflow limit reached (" + to_string(MAX_STACK_DEPTH) + ").");
             return;
         }
         top = new Node(val, top);
@@ -65,7 +66,7 @@ public:
     T pop()
     {
         if (isEmpty()){
-            throw runtime_error("Error: Stack underflow");
+            throw runtime_error("Error: Stack underflow or invalid operation.");
             return T();
         }
         Node* temp = top;
@@ -78,7 +79,7 @@ public:
     T& peek()
     {
         if (isEmpty()){
-            throw runtime_error("Error: Stack underflow");
+            throw runtime_error("Error: Stack underflow or invalid operation.");
         }
         return top->data;
     }
@@ -511,28 +512,118 @@ void executeProgram(const char* resolveBinPath, int64_t mainOffset, Timeline& ti
 // PASS 0x3: SERIALIZE TIMELINE
 void writeTdbg(Timeline& timeline, const char* tdbgPath)
 {
-    // placeholder for header
-    // index array of the size of stepcount from the timeline
-    // placing each snapshot in the file while maintaining the index(starting point of each nth snapshot)
-    // after timeline add the index array i the file
-    // update the header
+    FILE* f = fopen(tdbgPath, "wb");
+    if (!f) return;
+    TTDBHeader header;
+    memcpy(header.magic, "TTDB", 4);
+    header.version = 1;
+    header.stepCount = timeline.getStepCount();
+    header.indexOffset = 0;
+    writeHeader(f, header);
+    vector<int64_t> snapshotIndex;
+    TimelineNode* curr = timeline.begin();
+    while (curr != nullptr){
+        int64_t currentOffset = _ftelli64(f);
+        snapshotIndex.push_back(currentOffset);
+        fwrite(curr->data, sizeof(Snapshot), 1, f);
+        curr = curr->next;
+    }
+    header.indexOffset = _ftelli64(f);
+    if (!snapshotIndex.empty()){
+        fwrite(snapshotIndex.data(), sizeof(int64_t), snapshotIndex.size(), f);
+    }
+    writeHeader(f, header);
+    fclose(f);
+}
+void createSampleSourceBin(const char* sourcePath)
+{
+    FILE* f = fopen(sourcePath, "wb");
+    if (!f) return;
+
+    vector<string> instructions = {
+        "func multiply arg0 arg1",
+        "set res 0",
+        "mul res arg0 arg1",
+        "func_end",
+        "func main",
+        "set a 5",
+        "set b 4",
+        "call multiply a b",
+        "func_end"
+    };
+
+    int64_t placeholderOffset = -1;
+    for (const string& instr : instructions)
+    {
+        uint32_t strSize = static_cast<uint32_t>(instr.length());
+        fwrite(&placeholderOffset, sizeof(int64_t), 1, f);
+        fwrite(&strSize, sizeof(uint32_t), 1, f);
+        fwrite(instr.c_str(), 1, strSize, f);
+    }
+    fclose(f);
+}
+bool readTdbgSnapshot(const char* tdbgPath, int32_t stepIndex, Snapshot& outSnapshot){
+    FILE* f = fopen(tdbgPath, "rb");
+    if (!f) 
+        return false;
+    char magic[4];
+    if (fread(magic, 1, 4, f) != 4 || string(magic, 4) != "TTDB") {
+        fclose(f);
+        return false;
+    }
+    int32_t version, stepCount;
+    int64_t indexOffset;
+    if (fread(&version, sizeof(int32_t), 1, f) != 1 ||
+        fread(&stepCount, sizeof(int32_t), 1, f) != 1 ||
+        fread(&indexOffset, sizeof(int64_t), 1, f) != 1) {
+        fclose(f);
+        return false;
+    }
+    if (stepIndex < 0 || stepIndex >= stepCount) {
+        fclose(f);
+        return false;
+    }
+    int64_t entryPosition = indexOffset + (static_cast<int64_t>(stepIndex) * sizeof(int64_t));
+    if (_fseeki64(f, entryPosition, SEEK_SET) != 0) {
+        fclose(f);
+        return false;
+    }
+    int64_t snapshotOffset = 0;
+    if (fread(&snapshotOffset, sizeof(int64_t), 1, f) != 1) {
+        fclose(f);
+        return false;
+    }
+    if (_fseeki64(f, snapshotOffset, SEEK_SET) != 0) {
+        fclose(f);
+        return false;
+    }
+    bool success = (fread(&outSnapshot, sizeof(Snapshot), 1, f) == 1);
+    fclose(f);
+    return success;
 }
 // main section
 int32_t main()
 {
+    createSampleSourceBin("source.bin");
 
-    if (!validateProgram("source.bin"))
-    {
-        // send an error response instead of a .tdbg file
+    if (!validateProgram("source.bin")){
+        cerr << "Error: Source validation failed." << endl;
         return 1;
     }
 
     int64_t mainOffset = resolveProgram("source.bin", "resolve.bin");
+    if (mainOffset == -1){
+        cerr << "Error: Resolution step failed." << endl;
+        return 1;
+    }
 
     Timeline timeline;
     executeProgram("resolve.bin", mainOffset, timeline);
 
     writeTdbg(timeline, "session.tdbg");
+
+    cout << "Successfully generated 'session.tdbg' with "
+        << timeline.getStepCount() << " snapshot steps." << endl;
 
     return 0;
 }

@@ -37,3 +37,8 @@ i will start later with stage 3
 implemented stage 3
 stage 3
 i will start later with stage 4
+
+14/10/2026 12:42 pm
+implemented stage 4
+stage 4
+will try bonuses
